@@ -39,6 +39,10 @@ public:
 
 
 protected:
+  set<string> getSubscribeMethods() const override;
+  set<string> getAuthorizeMethods() const override;
+  set<string> getSubmitMethods() const override;
+  set<string> getGetWorkMethods() const override;
   void handleRequest_Authorize(const string &idStr, const JsonNode &jparams, const JsonNode &jroot) override;
   void handleRequest_Subscribe(const string &idStr, const JsonNode &jparams) override { }
   void handleRequest_GetWork(const string &idStr, const JsonNode &jparams) override; 

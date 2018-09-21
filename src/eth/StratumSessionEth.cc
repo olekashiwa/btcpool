@@ -37,6 +37,22 @@ StratumSessionEth::StratumSessionEth(evutil_socket_t fd, struct bufferevent *bev
 {
 }
 
+set<string> StratumSessionEth::getAuthorizeMethods() const {
+  return {"mining.authorize", "eth_submitLogin"};
+}
+
+set<string> StratumSessionEth::getSubmitMethods() const {
+  return {"mining.submit", "eth_submitWork"};
+}
+
+set<string> StratumSessionEth::getGetWorkMethods() const {
+  return {"eth_getWork"};
+}
+
+set<string> StratumSessionEth::getSubmitHashrateMethods() const {
+  return {"eth_submitHashrate"};
+}
+
 StratumSessionEth::LocalJobEth* StratumSessionEth::findLocalJob(const string &headerHash) {
   for (auto rit = localEthJobs_.rbegin(); rit != localEthJobs_.rend(); ++rit) {
     if (rit->headerHash_ == headerHash) {

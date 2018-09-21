@@ -148,10 +148,22 @@ protected:
   // invalid share counter
   StatsWindow<int64_t> invalidSharesCounter_;
 
+  map<string, function<void (const string &, const string &, const JsonNode &, const JsonNode &)>> methodRoutes_;
+
   uint8_t allocShortJobId();
 
   void setup();
   void setReadTimeout(const int32_t timeout);
+  void setupMethodRoutes();
+
+  virtual set<string> getSubscribeMethods() const;
+  virtual set<string> getAuthorizeMethods() const;
+  virtual set<string> getSubmitMethods() const;
+  virtual set<string> getMultiVersionMethods() const;
+  virtual set<string> getSuggestDifficultyMethods() const;
+  virtual set<string> getExtraNonceSubscribeMethods() const;
+  virtual set<string> getGetWorkMethods() const;
+  virtual set<string> getSubmitHashrateMethods() const;
 
   virtual bool handleMessage();  // handle all messages: ex-message and stratum message
 
@@ -166,6 +178,7 @@ protected:
 
   void handleRequest_SuggestDifficulty(const string &idStr, const JsonNode &jparams);
   void handleRequest_MultiVersion     (const string &idStr, const JsonNode &jparams);
+  void handleRequest_ExtraNonceSubscribe(const string &idStr);
   void _handleRequest_SetDifficulty(uint64_t suggestDiff);
   void _handleRequest_AuthorizePassword(const string &password);
 

@@ -40,6 +40,22 @@ StratumSessionBytom::StratumSessionBytom(evutil_socket_t fd, struct bufferevent 
 {
 }
 
+set<string> StratumSessionBytom::getSubscribeMethods() const {
+  return {}; // Bytom has no subscribe
+}
+
+set<string> StratumSessionBytom::getAuthorizeMethods() const {
+  return {"login"};
+}
+
+set<string> StratumSessionBytom::getSubmitMethods() const {
+  return {"submit"};
+}
+
+set<string> StratumSessionBytom::getGetWorkMethods() const {
+  return {"getwork"};
+}
+
 void StratumSessionBytom::handleRequest_Authorize(const string &idStr, const JsonNode &jparams, const JsonNode &/*jroot*/)
 {
   state_ = SUBSCRIBED;

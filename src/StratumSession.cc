@@ -112,6 +112,9 @@ bool StratumSession::isDead() {
 void StratumSession::setup() {
   // we set 15 seconds, will increase the timeout after sub & auth
   setReadTimeout(15);
+
+  // setup method routes
+  setupMethodRoutes();
 }
 
 void StratumSession::setReadTimeout(const int32_t timeout) {
@@ -122,6 +125,62 @@ void StratumSession::setReadTimeout(const int32_t timeout) {
   struct timeval rtv = {timeout, 0};
   struct timeval wtv = {120, 0};
   bufferevent_set_timeouts(bev_, &rtv, &wtv);
+}
+
+void StratumSession::setupMethodRoutes() {
+#define ADD_STRATUM_METHOD_ROUTES(m, ...) \
+  for (auto &method : get##m##Methods()) { \
+    auto p = methodRoutes_.emplace( \
+          method, [this](const string &idStr, const string &method, const JsonNode &jparams, const JsonNode &jroot) { \
+            handleRequest_##m(__VA_ARGS__); \
+          }); \
+    if (!p.second) { \
+      LOG(FATAL) << #m " method is duplicated" << method; \
+    } \
+  }
+
+  ADD_STRATUM_METHOD_ROUTES(Subscribe, idStr, jparams)
+  ADD_STRATUM_METHOD_ROUTES(Authorize, idStr, jparams, jroot)
+  ADD_STRATUM_METHOD_ROUTES(Submit, idStr, jparams)
+  ADD_STRATUM_METHOD_ROUTES(MultiVersion, idStr, jparams)
+  ADD_STRATUM_METHOD_ROUTES(SuggestDifficulty, idStr, jparams)
+  ADD_STRATUM_METHOD_ROUTES(ExtraNonceSubscribe, idStr)
+  ADD_STRATUM_METHOD_ROUTES(GetWork, idStr, jparams)
+  ADD_STRATUM_METHOD_ROUTES(SubmitHashrate, idStr, jparams)
+
+#undef ADD_STRATUM_METHOD_ROUTES
+}
+
+set<string> StratumSession::getSubscribeMethods() const {
+  return {"mining.subscribe"};
+}
+
+set<string> StratumSession::getAuthorizeMethods() const {
+  return {"mining.authorize"};
+}
+
+set<string> StratumSession::getSubmitMethods() const {
+  return {"mining.submit"};
+}
+
+set<string> StratumSession::getMultiVersionMethods() const {
+  return {"mining.multi_version"};
+}
+
+set<string> StratumSession::getSuggestDifficultyMethods() const {
+  return {"mining.suggest_difficulty"};
+}
+
+set<string> StratumSession::getExtraNonceSubscribeMethods() const {
+  return {"mining.extranonce.subscribe"};
+}
+
+set<string> StratumSession::getGetWorkMethods() const {
+  return {};
+}
+
+set<string> StratumSession::getSubmitHashrateMethods() const {
+  return {};
 }
 
 // if read success, will remove data from eventbuf
@@ -278,52 +337,11 @@ void StratumSession::rpc2ResponseError(const string &idStr, int errCode) {
 void StratumSession::handleRequest(const string &idStr, const string &method,
                                    const JsonNode &jparams, const JsonNode &jroot)
 {
-  if (method == "mining.submit" ||
-      "eth_submitWork" == method ||
-      "submit" == method)
-  { // most of requests are 'mining.submit'
-    // "eth_submitWork": claymore eth
-    // "submit": bytom
-    handleRequest_Submit(idStr, jparams);
-  }
-  else if (method == "mining.subscribe")
-  {
-    handleRequest_Subscribe(idStr, jparams);
-  }
-  else if (method == "mining.authorize" ||
-           "eth_submitLogin" == method ||
-           "login" == method)
-  {
-    // "eth_submitLogin": claymore eth
-    // "login": bytom
-    handleRequest_Authorize(idStr, jparams, jroot);
-  }
-  else if (method == "mining.multi_version")
-  {
-    handleRequest_MultiVersion(idStr, jparams);
-  }
-  else if (method == "mining.suggest_difficulty")
-  {
-    handleRequest_SuggestDifficulty(idStr, jparams);
-  }
-  else if (method == "mining.extranonce.subscribe")
-  {
-    //Claymore will send this for sia but no need response
-    //Do nothing for now
-  }
-  else if ("eth_getWork" == method ||
-           "getwork" == method)
-  {
-    handleRequest_GetWork(idStr, jparams);
-  }
-  else if ("eth_submitHashrate" == method)
-  {
-    handleRequest_SubmitHashrate(idStr, jparams);
-  }
-  else
-  {
-    if (!handleRequest_Specific(idStr, method, jparams, jroot))
-    {
+  auto it = methodRoutes_.find(method);
+  if (it != methodRoutes_.end() && it->second) {
+    it->second(idStr, method, jparams, jroot);
+  } else {
+    if (!handleRequest_Specific(idStr, method, jparams, jroot)) {
       // unrecognised method, just ignore it
       LOG(WARNING) << "unrecognised method: \"" << method << "\""
                    << ", client: " << clientIp_ << "/" << clientAgent_;
@@ -338,6 +356,12 @@ void StratumSession::handleRequest_MultiVersion(const string &idStr,
 //                                   idStr.c_str());
 //  sendData(s);
   DLOG(WARNING) << "message for handleRequest_MultiVersion received but not handled";
+}
+
+void StratumSession::handleRequest_ExtraNonceSubscribe(const string &idStr) {
+    // Claymore will send this for sia but no need response
+    // Do nothing for now
+    DLOG(WARNING) << "message for handleRequest_ExtraNonceSubscribe received but not handled";
 }
 
 void StratumSession::_handleRequest_AuthorizePassword(const string &password) {

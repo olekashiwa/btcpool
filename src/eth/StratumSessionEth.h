@@ -83,6 +83,11 @@ public:
                     const int32_t shareAvgSeconds, const uint32_t extraNonce1);
   
 protected:
+  set<string> getAuthorizeMethods() const override;
+  set<string> getSubmitMethods() const override;
+  set<string> getGetWorkMethods() const override;
+  set<string> getSubmitHashrateMethods() const override;
+
   LocalJobEth *findLocalJob(const string &headerHash);
   void clearLocalJobs();
 
