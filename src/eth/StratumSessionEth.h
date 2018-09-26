@@ -24,96 +24,35 @@
 #ifndef STRATUM_SESSION_ETH_H_
 #define STRATUM_SESSION_ETH_H_
 
-#include <set>
 #include "StratumSession.h"
 #include "StratumServerEth.h"
 
-
-class StratumSessionEth : public StratumSessionBase<ServerEth>
+class StratumSessionEth : public StratumSessionBase<StratumTraitsEth>
 {
 public:
-  enum class StratumProtocol {
-    ETHPROXY,
-    STRATUM,
-    // @see https://www.nicehash.com/sw/Ethereum_specification_R1.txt
-    NICEHASH_STRATUM
-  };
+  StratumSessionEth(StratumConnectionEth &connection,
+                    const DiffController &diffController,
+                    const std::string &clientAgent,
+                    const std::string &workerName,
+                    int64_t workerId,
+                    StratumProtocolEth ethProtocol);
 
-  static const char* getProtocolString(const StratumProtocol protocol) {
-    switch(protocol) {
-      case StratumProtocol::ETHPROXY:
-        return "ETHPROXY";
-      case StratumProtocol::STRATUM:
-        return "STRATUM";
-      case StratumProtocol::NICEHASH_STRATUM:
-        return "NICEHASH_STRATUM";
-    }
-    // should not be here
-    return "UNKNOWN";
-  }
+  void handleRequest(const std::string &idStr,
+                     const std::string &method,
+                     const JsonNode &jparams,
+                     const JsonNode &jroot) override;
 
-    // latest stratum jobs of this session
-  struct LocalJobEth {
-    uint64_t jobId_ = 0;
-    std::string headerHash_ = "";
-    std::set<LocalShare> submitShares_ = {};
-
-    // difficulty of this job (due to difficulty adjustment, 
-    // there can be multiple diffs in the same job)
-    std::set<uint64_t> jobDiffs_ = {};
-    uint64_t currentJobDiff_ = 0;
-
-    bool addLocalShare(const LocalShare &localShare) {
-      auto itr = submitShares_.find(localShare);
-      if (itr != submitShares_.end()) {
-        return false;  // already exist
-      }
-      submitShares_.insert(localShare);
-      return true;
-    }
-
-    void addDiff(uint64_t diff) {
-      jobDiffs_.insert(diff);
-      currentJobDiff_ = diff;
-    }
-  };
-
-  StratumSessionEth(evutil_socket_t fd, struct bufferevent *bev,
-                    ServerEth *server, struct sockaddr *saddr,
-                    const int32_t shareAvgSeconds, const uint32_t extraNonce1);
-  
-protected:
-  set<string> getAuthorizeMethods() const override;
-  set<string> getSubmitMethods() const override;
-  set<string> getGetWorkMethods() const override;
-  set<string> getSubmitHashrateMethods() const override;
-
-  LocalJobEth *findLocalJob(const string &headerHash);
-  void clearLocalJobs();
-
-  void responseError(const string &idStr, int code) override;
-  void responseTrue(const string &idStr) override;
+private:
+  void handleRequest_GetWork(const string &idStr, const JsonNode &jparams);
+  void handleRequest_SubmitHashrate(const string &idStr, const JsonNode &jparams);
+  void handleRequest_Submit(const string &idStr, const JsonNode &jparams);
+  void responseError(const string &idStr, int code);
+  void responseTrue(const string &idStr);
   void responseFalse(const string &idStr, int errCode);
   // response a false with an error object as data
   void rpc2ResponseFalse(const string &idStr, int errCode);
 
-  void sendMiningNotify(shared_ptr<StratumJobEx> exJobPtr, bool isFirstJob=false) override;  
-  void sendMiningNotifyWithId(shared_ptr<StratumJobEx> exJobPtr, const string &idStr);
-  void handleRequest_Subscribe        (const string &idStr, const JsonNode &jparams) override;      
-  void handleRequest_Submit           (const string &idStr, const JsonNode &jparams) override;         
-  void handleRequest_Authorize(const string &idStr, const JsonNode &jparams, const JsonNode &jroot) override;   
-  void handleRequest_GetWork(const string &idStr, const JsonNode &jparams) override; 
-  void handleRequest_SubmitHashrate(const string &idStr, const JsonNode &jparams) override; 
-
-  // Remove the Ethereum address prefix from worker's full name
-  // 0x00d8c82Eb65124Ea3452CaC59B64aCC230AA3482.test.aaa -> test.aaa
-  string stripEthAddrFromFullName(const string& fullNameStr);
-private: 
-  StratumProtocol ethProtocol_;
-  // Record the difficulty of the last time sent to the miner in NICEHASH_STRATUM protocol.
-  uint64_t nicehashLastSentDiff_;
-  // latest stratum jobs of this session
-  std::deque<LocalJobEth> localEthJobs_;
+  StratumProtocolEth ethProtocol_;
 };
 
 

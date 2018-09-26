@@ -22,7 +22,7 @@
  THE SOFTWARE.
  */
 #include "StratumServerBitcoin.h"
-#include "StratumSessionBitcoin.h"
+#include "StratumConnectionBitcoin.h"
 #include "StratumBitcoin.h"
 
 #include "rsk/RskSolvedShareData.h"
@@ -30,6 +30,8 @@
 #include <arith_uint256.h>
 #include "hash.h"
 #include "primitives/block.h"
+
+#include <boost/make_unique.hpp>
 
 using namespace std;
 
@@ -297,11 +299,9 @@ JobRepository *ServerBitcoin::createJobRepository(const char *kafkaBrokers,
   return new JobRepositoryBitcoin(kafkaBrokers, consumerTopic, fileLastNotifyTime, this);
 }
 
-StratumSession *ServerBitcoin::createSession(evutil_socket_t fd, struct bufferevent *bev,
-                                      struct sockaddr *saddr, const uint32_t sessionID)
+unique_ptr<StratumConnectionBase> ServerBitcoin::createConnection(struct bufferevent *bev, struct sockaddr *saddr, uint32_t sessionID)
 {
-  return new StratumSessionBitcoin(fd, bev, this, saddr,
-                     kShareAvgSeconds_, sessionID);
+  return boost::make_unique<StratumConnectionBitcoin>(*this, bev, saddr, sessionID);
 }
 
 void ServerBitcoin::sendSolvedShare2Kafka(const FoundBlock *foundBlock,

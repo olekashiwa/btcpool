@@ -42,5 +42,19 @@ public:
   uint32 jobTime() const override { return nTime_; }
 };
 
+class ServerSia;
+class StratumConnectionSia;
 
+struct StratumTraitsSia {
+  using ServerType = ServerSia;
+  using ConnectionType = StratumConnectionSia;
+  using JobDiffType = uint64_t;
+  struct LocalJobType : public LocalJob {
+    LocalJobType(uint64_t jobId, uint8_t shortJobId)
+        : LocalJob(jobId), shortJobId_(shortJobId), jobDifficulty_(0) {}
+    bool operator==(uint8_t shortJobId) const { return shortJobId_ == shortJobId; }
+    uint8_t shortJobId_;
+    uint64_t jobDifficulty_;
+  };
+};
 #endif

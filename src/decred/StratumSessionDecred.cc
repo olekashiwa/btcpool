@@ -23,147 +23,42 @@
  */
 
 #include "StratumSessionDecred.h"
+
+#include "StratumConnectionDecred.h"
 #include "StratumServerDecred.h"
 #include "StratumDecred.h"
+#include "StratumMessageDispatcher.h"
 #include "DiffController.h"
+
 #include <boost/endian/conversion.hpp>
 
-StratumSessionDecred::StratumSessionDecred(evutil_socket_t fd, bufferevent *bev,
-                                           ServerDecred *server, sockaddr *saddr,
-                                           int32_t shareAvgSeconds, uint32_t extraNonce1,
-                                           const StratumProtocolDecred &protocol)
-  : StratumSessionBase<ServerDecred>(fd, bev, server, saddr, shareAvgSeconds, extraNonce1)
-  , protocol_(protocol)
+StratumSessionDecred::StratumSessionDecred(StratumConnectionDecred &connection,
+                                           const DiffController &diffController,
+                                           const std::string &clientAgent,
+                                           const std::string &workerName,
+                                           int64_t workerId)
+  : StratumSessionBase(connection, diffController, clientAgent, workerName, workerId)
 {
 }
 
-void StratumSessionDecred::sendMiningNotify(shared_ptr<StratumJobEx> exJobPtr, bool isFirstJob)
-{
-  if (state_ < AUTHENTICATED || exJobPtr == nullptr)
-  {
-    LOG(ERROR) << "decred sendMiningNotify failed, state = " << state_;
-    return;
+void StratumSessionDecred::handleRequest(const std::string &idStr,
+                                         const std::string &method,
+                                         const JsonNode &jparams,
+                                         const JsonNode &jroot) {
+  if (method == "mining.submit") {
+    handleRequest_Submit(idStr, jparams);
   }
-
-  StratumJobDecred *jobDecred = dynamic_cast<StratumJobDecred *>(exJobPtr->sjob_);
-  if (nullptr == jobDecred)
-  {
-    LOG(ERROR) << "Invalid job type, jobId = " << exJobPtr->sjob_->jobId_;
-    return;
-  }
-
-  localJobs_.push_back(LocalJob());
-  LocalJob &ljob = *(localJobs_.rbegin());
-  ljob.blkBits_ = jobDecred->header_.nBits.value();
-  ljob.jobId_ = jobDecred->jobId_;
-  ljob.shortJobId_ = allocShortJobId();
-  ljob.jobDifficulty_ = diffController_->calcCurDiff();
-
-  // set difficulty
-  if (currDiff_ != ljob.jobDifficulty_) {
-    sendSetDifficulty(ljob.jobDifficulty_);
-    currDiff_ = ljob.jobDifficulty_;
-  }
-
-  // PrevHash field is int32 reversed
-  auto prevHash = reinterpret_cast<const boost::endian::little_uint32_buf_t *>(jobDecred->header_.prevBlock.begin());
-  auto notifyStr = Strings::Format("{\"id\":null,\"jsonrpc\":\"2.0\",\"method\":\"mining.notify\","
-                                   "\"params\":[\"%04" PRIx8 "\",\"%08x%08x%08x%08x%08x%08x%08x%08x\",\"%s00000000\",\"%s\",[],\"%s\",\"%" PRIx32 "\",\"%" PRIx32 "\",%s]}\n",
-                                   ljob.shortJobId_,
-                                   prevHash[0].value(),
-                                   prevHash[1].value(),
-                                   prevHash[2].value(),
-                                   prevHash[3].value(),
-                                   prevHash[4].value(),
-                                   prevHash[5].value(),
-                                   prevHash[6].value(),
-                                   prevHash[7].value(),
-                                   jobDecred->getCoinBase1().c_str(),
-                                   HexStr(BEGIN(jobDecred->header_.stakeVersion), END(jobDecred->header_.stakeVersion)).c_str(),
-                                   HexStr(BEGIN(jobDecred->header_.version), END(jobDecred->header_.version)).c_str(),
-                                   jobDecred->header_.nBits.value(),
-                                   jobDecred->header_.timestamp.value(),
-                                   exJobPtr->isClean_ ? "true" : "false");
-  sendData(notifyStr);
-
-  // clear localJobs_
-  clearLocalJobs();
-}
-
-void StratumSessionDecred::handleRequest_Subscribe(const string &idStr, const JsonNode &jparams)
-{
-  if (state_ != CONNECTED) {
-    responseError(idStr, StratumStatus::UNKNOWN);
-    return;
-  }
-
-  state_ = SUBSCRIBED;
-
-  //
-  //  params[0] = client version     [optional]
-  //
-  // client request eg.:
-  //  {"id": 1, "method": "mining.subscribe", "params": ["gominer/0.2.0-decred"]}
-  //
-  if (jparams.children()->size() >= 1) {
-    clientAgent_ = jparams.children()->at(0).str().substr(0, 30);  // 30 is max len
-    clientAgent_ = filterWorkerName(clientAgent_);
-  }
-
-  //  result[0] = 2-tuple with name of subscribed notification and subscription ID.
-  //              Theoretically it may be used for unsubscribing, but obviously miners won't use it.
-  //  result[1] = ExtraNonce1, used for building the coinbase. There are 2 variants of miners known
-  //              to us: one will take first 4 bytes and another will take last four bytes so we put
-  //              the value on both places.
-  //  result[2] = ExtraNonce2_size, the number of bytes that the miner users for its ExtraNonce2 counter
-  assert(kExtraNonce2Size_ == 8);
-  auto extraNonce1Str = protocol_.getExtraNonce1String(extraNonce1_);
-  const string s = Strings::Format("{\"id\":%s,\"result\":[[[\"mining.set_difficulty\",\"1\"]"
-                                   ",[\"mining.notify\",\"%08x\"]],\"%s\",%d],\"error\":null}\n",
-                                   idStr.c_str(), extraNonce1_, extraNonce1Str.c_str(), kExtraNonce2Size_);
-  sendData(s);
-}
-
-void StratumSessionDecred::handleRequest_Authorize(const string &idStr, const JsonNode &jparams, const JsonNode &jroot)
-{
-  if (state_ != SUBSCRIBED)
-  {
-    responseError(idStr, StratumStatus::NOT_SUBSCRIBED);
-    return;
-  }
-
-  //
-  //  params[0] = user[.worker]
-  //  params[1] = password
-  //  eg. {"params": ["slush.miner1", "password"], "id": 2, "method": "mining.authorize"}
-  //  the password may be omitted.
-  //  eg. {"params": ["slush.miner1"], "id": 2, "method": "mining.authorize"}
-  //
-  if (jparams.children()->size() < 1)
-  {
-    responseError(idStr, StratumStatus::INVALID_USERNAME);
-    return;
-  }
-
-  string fullName = jparams.children()->at(0).str();
-  string password;
-  if (jparams.children()->size() > 1)
-  {
-    password = jparams.children()->at(1).str();
-  }
-
-  checkUserAndPwd(idStr, fullName, password);
 }
 
 void StratumSessionDecred::handleRequest_Submit(const string &idStr, const JsonNode &jparams)
 {
-  if (state_ != AUTHENTICATED) {
-    responseError(idStr, StratumStatus::UNAUTHORIZED);
+  auto &connection = getConnection();
+  if (connection.getState() != StratumConnectionBase::AUTHENTICATED) {
+    connection.responseError(idStr, StratumStatus::UNAUTHORIZED);
 
     // there must be something wrong, send reconnect command
     string s = "{\"id\":null,\"method\":\"client.reconnect\",\"params\":[]}\n";
-    sendData(s);
-
+    connection.sendData(s);
     return;
   }
 
@@ -175,14 +70,14 @@ void StratumSessionDecred::handleRequest_Submit(const string &idStr, const JsonN
   if (jparams.children()->size() < 5 ||
       std::any_of(std::next(jparams.children()->begin()), jparams.children()->end(),
                   [](const JsonNode& n){ return n.type() != Utilities::JS::type::Str || !IsHex(n.str()); })) {
-    responseError(idStr, StratumStatus::ILLEGAL_PARARMS);
+    connection.responseError(idStr, StratumStatus::ILLEGAL_PARARMS);
     return;
   }
 
   auto extraNonce2 = ParseHex(jparams.children()->at(2).str());
   if (extraNonce2.size() != kExtraNonce2Size_ &&
       extraNonce2.size() != 12) { // Extra nonce size
-    responseError(idStr, StratumStatus::ILLEGAL_PARARMS);
+    connection.responseError(idStr, StratumStatus::ILLEGAL_PARARMS);
     return;
   }
 
@@ -190,19 +85,27 @@ void StratumSessionDecred::handleRequest_Submit(const string &idStr, const JsonN
   auto ntime = jparams.children()->at(3).uint32_hex();
   auto nonce = jparams.children()->at(4).uint32_hex();
 
-  auto server = GetServer();
-  auto jobRepo = server->GetJobRepository();
+  auto &server = connection.getServer();
+  auto &worker = connection.getWorker();
+  auto jobRepo = server.GetJobRepository();
 
-  LocalJob *localJob = findLocalJob(shortJobId);
+  auto localJob = connection.findLocalJob(shortJobId);
   if (!localJob) {
     // if can't find localJob, could do nothing
-    responseError(idStr, StratumStatus::JOB_NOT_FOUND);
+    connection.responseError(idStr, StratumStatus::JOB_NOT_FOUND);
 
     LOG(INFO) << "rejected share: " << StratumStatus::toString(StratumStatus::JOB_NOT_FOUND)
-              << ", worker: " << worker_.fullName_ << ", Share(id: " << idStr << ", shortJobId: "
+              << ", worker: " << worker.fullName_ << ", Share(id: " << idStr << ", shortJobId: "
               << static_cast<uint16_t>(shortJobId) << ", nTime: " << ntime << "/" << date("%F %T", ntime) << ")";
     return;
   }
+
+  auto iter = jobDiffs_.find(localJob);
+  if (iter == jobDiffs_.end()) {
+    LOG(ERROR) << "can't find session's diff, worker: " << worker.fullName_;
+    return;
+  }
+  auto clientIp = connection.getClientIp();
 
   uint32_t height = 0;
   auto exjob = jobRepo->getStratumJobEx(localJob->jobId_);
@@ -216,7 +119,7 @@ void StratumSessionDecred::handleRequest_Submit(const string &idStr, const JsonN
     height = sjob->header_.height.value();
   }
 
-  ShareDecred share(worker_.workerHashId_, worker_.userId_, clientIpInt_, localJob->jobId_, localJob->jobDifficulty_, localJob->blkBits_, height, nonce, extraNonce1_);
+  ShareDecred share(workerId_, worker.userId_, clientIp, localJob->jobId_, iter->second, localJob->blkBits_, height, nonce, connection.getSessionId());
 
   // we send share to kafka by default, but if there are lots of invalid
   // shares in a short time, we just drop them.
@@ -227,36 +130,21 @@ void StratumSessionDecred::handleRequest_Submit(const string &idStr, const JsonN
   // can't find local share
   if (!localJob->addLocalShare(localShare)) {
     share.status_ = StratumStatus::DUPLICATE_SHARE;
-    responseError(idStr, share.status_);
-
-    // add invalid share to counter
-    invalidSharesCounter_.insert(static_cast<int64_t>(time(nullptr)), 1);
-
-    goto finish;
-  }
-
-  share.status_ = server->checkShare(share, exjob, extraNonce2, ntime, nonce, worker_.fullName_);
-
-  // accepted share
-  if (StratumStatus::isAccepted(share.status_)) {
-    diffController_->addAcceptedShare(share.shareDiff_);
-    responseTrue(idStr);
   } else {
-    // reject share
-    responseError(idStr, share.status_);
+    share.status_ = server.checkShare(share, exjob, extraNonce2, ntime, nonce, worker.fullName_);
+  }
 
+  if (!handleShare(idStr, share.status_, share.shareDiff_)) {
     // add invalid share to counter
     invalidSharesCounter_.insert(static_cast<int64_t>(time(nullptr)), 1);
   }
 
-
-finish:
   DLOG(INFO) << share.toString();
 
   if (!StratumStatus::isAccepted(share.status_)) {
     // log all rejected share to answer "Why the rejection rate of my miner increased?"
     LOG(INFO) << "rejected share: " << StratumStatus::toString(share.status_)
-              << ", worker: " << worker_.fullName_ << ", " << share.toString();
+              << ", worker: " << worker.fullName_ << ", " << share.toString();
 
     // check if thers is invalid share spamming
     int64_t invalidSharesNum = invalidSharesCounter_.sum(time(nullptr),
@@ -266,13 +154,13 @@ finish:
       isSendShareToKafka = false;
 
       LOG(INFO) << "invalid share spamming, diff: "<< share.shareDiff_ << ", worker: "
-                << worker_.fullName_ << ", agent: " << clientAgent_ << ", ip: " << clientIp_;
+                << worker.fullName_ << ", agent: " << clientAgent_ << ", ip: " << clientIp;
     }
   }
 
   if (isSendShareToKafka) {
     share.checkSum_ = share.checkSum();
-    GetServer()->sendShare2Kafka(reinterpret_cast<const uint8_t *>(&share), sizeof(ShareDecred));
+    server.sendShare2Kafka(reinterpret_cast<const uint8_t *>(&share), sizeof(ShareDecred));
   }
   return;
 }

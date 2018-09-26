@@ -23,10 +23,14 @@
  */
 
 #include "StratumServerDecred.h"
+
+#include "StratumConnectionDecred.h"
 #include "StratumDecred.h"
 #include "StratumSessionDecred.h"
 #include "CommonDecred.h"
+
 #include "arith_uint256.h"
+
 #include <boost/algorithm/string.hpp>
 #include <boost/make_unique.hpp>
 #include <iostream>
@@ -132,9 +136,9 @@ ServerDecred::ServerDecred(int32_t shareAvgSeconds, const libconfig::Config &con
   }
 }
 
-StratumSession* ServerDecred::createSession(evutil_socket_t fd, bufferevent *bev, sockaddr *saddr, const uint32_t sessionID)
+unique_ptr<StratumConnectionBase> ServerDecred::createConnection(bufferevent *bev, sockaddr *saddr, uint32_t sessionID)
 {
-  return new StratumSessionDecred(fd, bev, this, saddr, kShareAvgSeconds_, sessionID, *protocol_);
+  return boost::make_unique<StratumConnectionDecred>(*this, bev, saddr, sessionID, *protocol_);
 }
 
 JobRepository* ServerDecred::createJobRepository(const char *kafkaBrokers, const char *consumerTopic, const string &fileLastNotifyTime)

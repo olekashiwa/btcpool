@@ -22,7 +22,10 @@
  THE SOFTWARE.
  */
 #include "StratumSessionBytom.h"
+
 #include "StratumServerBytom.h"
+#include "StratumConnectionBytom.h"
+#include "StratumMessageDispatcher.h"
 #include "DiffController.h"
 
 #include "bytom/bh_shared.h"
@@ -32,150 +35,34 @@
 #endif  //NO_CUDA
 
 /////////////////////////////StratumSessionBytom////////////////////////////
-StratumSessionBytom::StratumSessionBytom(evutil_socket_t fd, struct bufferevent *bev,
-                                         ServerBytom *server, struct sockaddr *saddr,
-                                         const int32_t shareAvgSeconds, const uint32_t extraNonce1) 
-  : StratumSessionBase(fd, bev, server, saddr, shareAvgSeconds, extraNonce1)
-  , shortJobId_(1)
+StratumSessionBytom::StratumSessionBytom(StratumConnectionBytom &connection,
+                                         const DiffController &diffController,
+                                         const std::string &clientAgent,
+                                         const std::string &workerName,
+                                         int64_t workerId)
+  : StratumSessionBase(connection, diffController, clientAgent, workerName, workerId)
 {
 }
 
-set<string> StratumSessionBytom::getSubscribeMethods() const {
-  return {}; // Bytom has no subscribe
-}
-
-set<string> StratumSessionBytom::getAuthorizeMethods() const {
-  return {"login"};
-}
-
-set<string> StratumSessionBytom::getSubmitMethods() const {
-  return {"submit"};
-}
-
-set<string> StratumSessionBytom::getGetWorkMethods() const {
-  return {"getwork"};
-}
-
-void StratumSessionBytom::handleRequest_Authorize(const string &idStr, const JsonNode &jparams, const JsonNode &/*jroot*/)
-{
-  state_ = SUBSCRIBED;
-  auto params = const_cast<JsonNode&> (jparams);
-  string fullName = params["login"].str();
-  string pwd = params["pass"].str();
-  checkUserAndPwd(idStr, fullName, pwd);
-}
-
-void StratumSessionBytom::sendMiningNotify(shared_ptr<StratumJobEx> exJobPtr, bool isFirstJob)
-{
-  ServerBytom* server = GetServer();
-  /*
-    Bytom difficulty logic (based on B3-Mimic repo)
-    - constants
-      * Diff1: 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF
-    Sending miningNotify
-    - target
-      Pool target is based from Diff1 and difficulty. target = Diff1 / difficulty
-    Miner difficulty logic:
-    - use target
-    Pool check submit (see StratumSessionBytom::handleRequest_Submit)
-  */
-  if (state_ < AUTHENTICATED || nullptr == exJobPtr)
-  {
-    LOG(ERROR) << "bytom sendMiningNotify failed, state: " << state_;
-    return;
+void StratumSessionBytom::handleRequest(const std::string &idStr,
+                                        const std::string &method,
+                                        const JsonNode &jparams,
+                                        const JsonNode &jroot) {
+  if (method == "getwork") {
+    handleRequest_GetWork(idStr, jparams);
+  } else if (method == "submit") {
+    handleRequest_Submit(idStr, jparams);
   }
-
-  StratumJobBytom *sJob = dynamic_cast<StratumJobBytom *>(exJobPtr->sjob_);
-  if (nullptr == sJob)
-    return;
-
-  localJobs_.push_back(LocalJob());
-  LocalJob &ljob = *(localJobs_.rbegin());
-  ljob.jobId_ = sJob->jobId_;
-  ljob.shortJobId_ = shortJobId_++;
-
-  if (server->isDevModeEnable_)
-  {
-    ljob.jobDifficulty_ = server->minerDifficulty_;
-  }
-  else
-  {
-    ljob.jobDifficulty_ = diffController_->calcCurDiff();
-  }
-
-
-  uint64 nonce = (((uint64)extraNonce1_) << 32);
-  string notifyStr, nonceStr, versionStr, heightStr, timestampStr, bitsStr;
-  Bin2HexR((uint8 *)&nonce, 8, nonceStr);
-  Bin2Hex((uint8 *)&sJob->blockHeader_.version, 8, versionStr);
-  Bin2Hex((uint8 *)&sJob->blockHeader_.height, 8, heightStr);
-  Bin2Hex((uint8 *)&sJob->blockHeader_.timestamp, 8, timestampStr);
-  Bin2Hex((uint8 *)&sJob->blockHeader_.bits, 8, bitsStr);
-
-  string targetStr;
-  {
-    vector<uint8_t> targetBin;
-    Bytom_DifficultyToTargetBinary(ljob.jobDifficulty_, targetBin);
-    //  trim the zeroes to reduce bandwidth
-    unsigned int endIdx = targetBin.size() - 1;
-    for(; endIdx > 0; --endIdx)  //  > 0 (not >=0) because need to print at least 1 byte
-    {
-      if(targetBin[endIdx] != 0)
-        break;
-    }
-    //  reversed based on logic seen in B3-Mimic. Miner expect reversed hex
-    Bin2HexR(targetBin.data(), endIdx + 1, targetStr);  
-  }
-
-  string jobString = Strings::Format(
-    "{\"version\": \"%s\","
-        "\"height\": \"%s\","
-        "\"previous_block_hash\": \"%s\","
-        "\"timestamp\": \"%s\","
-        "\"transactions_merkle_root\": \"%s\","
-        "\"transaction_status_hash\": \"%s\","
-        "\"nonce\": \"%s\","
-        "\"bits\": \"%s\","
-        "\"job_id\": \"%d\","
-        "\"seed\": \"%s\","
-        "\"target\": \"%s\"}",
-        versionStr.c_str(),
-        heightStr.c_str(),
-        sJob->blockHeader_.previousBlockHash.c_str(),
-        timestampStr.c_str(),
-        sJob->blockHeader_.transactionsMerkleRoot.c_str(),
-        sJob->blockHeader_.transactionStatusHash.c_str(),
-        nonceStr.c_str(),
-        bitsStr.c_str(),
-        ljob.shortJobId_,
-        sJob->seed_.c_str(),
-        targetStr.c_str());   
-  
-  if (isFirstJob)
-  {
-    notifyStr = Strings::Format(
-        "{\"id\": 1, \"jsonrpc\": \"2.0\", \"result\": {\"id\": \"%s\", \"job\": %s, \"status\": \"OK\"}, \"error\": null}",
-        server->isDevModeEnable_ ? "antminer_1" : worker_.fullName_.c_str(),
-        jobString.c_str());
-  }
-  else
-  {
-    notifyStr = Strings::Format(
-        "{\"jsonrpc\": \"2.0\", \"method\":\"job\", \"params\": %s}",
-        jobString.c_str());
-  }
-  // LOG(INFO) << "Difficulty: " << ljob.jobDifficulty_ << "\nsendMiningNotify " << notifyStr.c_str();
-  sendData(notifyStr);
 }
 
 void StratumSessionBytom::handleRequest_GetWork(const string &idStr, const JsonNode &jparams) {
-    sendMiningNotify(GetServer()->GetJobRepository()->getLatestStratumJobEx(), false);
+  getConnection().sendMiningNotify(getConnection().getServer().GetJobRepository()->getLatestStratumJobEx(), false);
 }
 
 namespace BytomUtils
 {
 
-int checkProofOfWork(EncodeBlockHeader_return encoded, StratumJobBytom *sJob, StratumSession::LocalJob *localJob)
+int checkProofOfWork(EncodeBlockHeader_return encoded, StratumJobBytom *sJob, uint64_t difficulty)
 {
   DLOG(INFO) << "verify blockheader hash=" << encoded.r1 << ", seed=" << sJob->seed_;
   vector<char> vHeader, vSeed;
@@ -196,7 +83,7 @@ int checkProofOfWork(EncodeBlockHeader_return encoded, StratumJobBytom *sJob, St
   string targetStr;
   Bin2Hex(pTarget, 32, targetStr);
   GoSlice text = {(void *)pTarget, 32, 32};
-  uint64 localJobBits = Bytom_JobDifficultyToTargetCompact(localJob->jobDifficulty_);  
+  uint64 localJobBits = Bytom_JobDifficultyToTargetCompact(difficulty);
 
   bool powResultLocalJob = CheckProofOfWork(text, localJobBits);
   if(powResultLocalJob)
@@ -219,22 +106,10 @@ int checkProofOfWork(EncodeBlockHeader_return encoded, StratumJobBytom *sJob, St
 
 }
 
-void StratumSessionBytom::Bytom_rpc2ResponseBoolean(const string &idStr, bool result, const string& failMessage) {
-  if(result)
-  {
-    const string s = Strings::Format("{\"id\":%s,\"jsonrpc\":\"2.0\",\"result\":{\"status\":\"OK\"},\"error\":null}\n", idStr.c_str());
-    sendData(s);
-  }
-  else
-  {
-    const string s = Strings::Format("{\"id\":%s,\"jsonrpc\":\"2.0\",\"result\":null,\"error\":{\"code\":-1, \"message\":\"%s\"}}\n", idStr.c_str(), failMessage.c_str());
-    sendData(s);
-  }
-}
-
 void StratumSessionBytom::handleRequest_Submit(const string &idStr, const JsonNode &jparams)
 {
-  ServerBytom* server = GetServer();
+  auto &connection = getConnection();
+  auto &server = connection.getServer();
   /*
     Calculating difficulty
     - Nonce. B3-Mimic send hex value.
@@ -249,19 +124,19 @@ void StratumSessionBytom::handleRequest_Submit(const string &idStr, const JsonNo
 
   uint8 shortJobId = (uint8)params["job_id"].uint32();
 
-  LocalJob *localJob= findLocalJob(shortJobId);
+  LocalJob *localJob= connection.findLocalJob(shortJobId);
   if (nullptr == localJob)
   {
-    Bytom_rpc2ResponseBoolean(idStr, false, "Block expired");
+    connection.rpc2ResponseBoolean(idStr, false, "Block expired");
     LOG(ERROR) << "can not find local bytom job id=" << (int)shortJobId;
     return;
   }
 
   shared_ptr<StratumJobEx> exjob;
-  exjob = server->GetJobRepository()->getStratumJobEx(localJob->jobId_);
+  exjob = server.GetJobRepository()->getStratumJobEx(localJob->jobId_);
   if (nullptr == exjob || nullptr == exjob->sjob_)
   {
-    Bytom_rpc2ResponseBoolean(idStr, false, "Block expired");
+    connection.rpc2ResponseBoolean(idStr, false, "Block expired");
     LOG(ERROR) << "bytom local job not found " << std::hex << localJob->jobId_;
     return;
   }
@@ -269,7 +144,7 @@ void StratumSessionBytom::handleRequest_Submit(const string &idStr, const JsonNo
   StratumJobBytom *sJob = dynamic_cast<StratumJobBytom *>(exjob->sjob_);
   if (nullptr == sJob)
   {
-    Bytom_rpc2ResponseBoolean(idStr, false, "Unknown reason");
+    connection.rpc2ResponseBoolean(idStr, false, "Unknown reason");
     LOG(FATAL) << "Code error, casting stratum job bytom failed for job id=" << std::hex << localJob->jobId_;
     return;
   }
@@ -288,28 +163,37 @@ void StratumSessionBytom::handleRequest_Submit(const string &idStr, const JsonNo
 
   //  Check share duplication
   LocalShare localShare(nonce, 0, 0);
-  if (!server->isEnableSimulator_ && !localJob->addLocalShare(localShare))
+  if (!server.isEnableSimulator_ && !localJob->addLocalShare(localShare))
   {
-    responseError(idStr, StratumStatus::DUPLICATE_SHARE);
+    connection.responseError(idStr, StratumStatus::DUPLICATE_SHARE);
     // add invalid share to counter
     invalidSharesCounter_.insert((int64_t)time(nullptr), 1);
     return;
   }
+
+  auto &worker = connection.getWorker();
+  auto iter = jobDiffs_.find(localJob);
+  if (iter == jobDiffs_.end()) {
+    LOG(ERROR) << "can't find session's diff, worker: " << worker.fullName_;
+    return;
+  }
+  auto difficulty = iter->second;
+  auto clientIp = connection.getClientIp();
 
   //Check share
   ShareBytom share;
   //  ShareBase portion
   share.version_ = ShareBytom::CURRENT_VERSION;
   //  TODO: not set: share.checkSum_
-  share.workerHashId_ = worker_.workerHashId_;
-  share.userId_ = worker_.userId_;
+  share.workerHashId_ = workerId_;
+  share.userId_ = worker.userId_;
   share.status_ = StratumStatus::REJECT_NO_REASON;
   share.timestamp_ = (uint32_t)time(nullptr);
-  share.ip_.fromIpv4Int(clientIpInt_);
+  share.ip_.fromIpv4Int(clientIp);
 
   //  ShareBytom portion
   share.jobId_ = localJob->jobId_;
-  share.shareDiff_ = localJob->jobDifficulty_;
+  share.shareDiff_ = difficulty;
   share.blkBits_ = sJob->blockHeader_.bits;
   share.height_ = sJob->blockHeader_.height;
   
@@ -334,27 +218,25 @@ void StratumSessionBytom::handleRequest_Submit(const string &idStr, const JsonNo
   if(exjob->isStale())
   {
     share.status_ = StratumStatus::JOB_NOT_FOUND;
-    Bytom_rpc2ResponseBoolean(idStr, false, "Block expired");
+    connection.rpc2ResponseBoolean(idStr, false, "Block expired");
   }
   else
   {
     EncodeBlockHeader_return encoded = EncodeBlockHeader(sJob->blockHeader_.version, sJob->blockHeader_.height, (char *)sJob->blockHeader_.previousBlockHash.c_str(), sJob->blockHeader_.timestamp,
                                     nonce, sJob->blockHeader_.bits, (char *)sJob->blockHeader_.transactionStatusHash.c_str(), (char *)sJob->blockHeader_.transactionsMerkleRoot.c_str());
-    int powResult = BytomUtils::checkProofOfWork(encoded, sJob, localJob);
+    int powResult = BytomUtils::checkProofOfWork(encoded, sJob, difficulty);
     share.status_ = powResult;
     if(powResult == StratumStatus::SOLVED)
     {
       std::cout << "share solved\n";
       LOG(INFO) << "share solved";
-      server->sendSolvedShare2Kafka(nonce, encoded.r0, share.height_, Bytom_TargetCompactToDifficulty(sJob->blockHeader_.bits), worker_);
-      server->GetJobRepository()->markAllJobsAsStale();      
-      diffController_->addAcceptedShare(share.shareDiff_);
-      Bytom_rpc2ResponseBoolean(idStr, true);
+      server.sendSolvedShare2Kafka(nonce, encoded.r0, share.height_, Bytom_TargetCompactToDifficulty(sJob->blockHeader_.bits), worker);
+      server.GetJobRepository()->markAllJobsAsStale();
+      handleShare(idStr, share.status_, share.shareDiff_);
     }
     else if(powResult == StratumStatus::ACCEPT)
     {
-      diffController_->addAcceptedShare(share.shareDiff_);
-      Bytom_rpc2ResponseBoolean(idStr, true);
+      handleShare(idStr, share.status_, share.shareDiff_);
     }
     else
     {
@@ -365,7 +247,7 @@ void StratumSessionBytom::handleRequest_Submit(const string &idStr, const JsonNo
           failMessage = "Low difficulty share";
         break;        
       }
-      Bytom_rpc2ResponseBoolean(idStr, false, failMessage);
+      connection.rpc2ResponseBoolean(idStr, false, failMessage);
     }
     free(encoded.r0);
     free(encoded.r1);
@@ -383,8 +265,8 @@ void StratumSessionBytom::handleRequest_Submit(const string &idStr, const JsonNo
     {
       isSendShareToKafka = false;
       LOG(WARNING) << "invalid share spamming, diff: "
-                   << share.shareDiff_ << ", uid: " << worker_.userId_
-                   << ", uname: \"" << worker_.userName_ << "\", ip: " << clientIp_
+                   << share.shareDiff_ << ", uid: " << worker.userId_
+                   << ", uname: \"" << worker.userName_ << "\", ip: " << clientIp
                    << "checkshare result: " << share.status_;
     }
   }
@@ -392,7 +274,7 @@ void StratumSessionBytom::handleRequest_Submit(const string &idStr, const JsonNo
   if (isSendShareToKafka)
   {
     share.checkSum_ = share.checkSum();
-    server->sendShare2Kafka((const uint8_t *)&share, sizeof(ShareBytom));
+    server.sendShare2Kafka((const uint8_t *)&share, sizeof(ShareBytom));
 
     string shareInHex;
     Bin2Hex((uint8_t*)&share, sizeof(ShareBytom), shareInHex);
@@ -401,17 +283,4 @@ void StratumSessionBytom::handleRequest_Submit(const string &idStr, const JsonNo
               << "- hexvalue: " << shareInHex.c_str() << "\n";
 
   }
-  
-}
-
-bool StratumSessionBytom::validate(const JsonNode &jmethod, const JsonNode &jparams)
-{
-  if (jmethod.type() == Utilities::JS::type::Str &&
-      jmethod.size() != 0 &&
-      jparams.type() == Utilities::JS::type::Obj)
-  {
-    return true;
-  }
-
-  return false;
 }

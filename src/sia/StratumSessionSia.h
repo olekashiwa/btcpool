@@ -27,21 +27,22 @@
 #include "StratumSession.h"
 #include "StratumServerSia.h"
 
-
-class StratumSessionSia : public StratumSessionBase<ServerSia>
+class StratumSessionSia : public StratumSessionBase<StratumTraitsSia>
 {
 public:
-  StratumSessionSia(evutil_socket_t fd, struct bufferevent *bev,
-                    ServerSia *server, struct sockaddr *saddr,
-                    const int32_t shareAvgSeconds, const uint32_t extraNonce1);
-  //virtual bool initialize();
-  void sendMiningNotify(shared_ptr<StratumJobEx> exJobPtr, bool isFirstJob=false) override;  
-  void handleRequest_Authorize(const string &idStr, const JsonNode &jparams, const JsonNode &jroot) override{ } //  no implementation yet
-  void handleRequest_Subscribe   (const string &idStr, const JsonNode &jparams) override;        
-  void handleRequest_Submit (const string &idStr, const JsonNode &jparams) override;  
+  StratumSessionSia(StratumConnectionSia &connection,
+                    const DiffController &diffController,
+                    const std::string &clientAgent,
+                    const std::string &workerName,
+                    int64_t workerId);
+
+  void handleRequest(const std::string &idStr,
+                     const std::string &method,
+                     const JsonNode &jparams,
+                     const JsonNode &jroot) override;
 
 private:
-  uint8 shortJobId_;    //Claymore jobId starts from 0
+  void handleRequest_Submit(const string &idStr, const JsonNode &jparams);
 };
 
 #endif

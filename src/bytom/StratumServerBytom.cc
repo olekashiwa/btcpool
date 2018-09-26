@@ -22,11 +22,13 @@
  THE SOFTWARE.
  */
 #include "StratumServerBytom.h"
-#include "StratumSessionBytom.h"
+
+#include "StratumConnectionBytom.h"
 #include "DiffController.h"
 
-using namespace std;
+#include <boost/make_unique.hpp>
 
+using namespace std;
 
 ///////////////////////////////////JobRepositoryBytom///////////////////////////////////
 JobRepositoryBytom::JobRepositoryBytom(const char *kafkaBrokers, const char *consumerTopic, const string &fileLastNotifyTime, ServerBytom *server)
@@ -83,11 +85,9 @@ JobRepository *ServerBytom::createJobRepository(const char *kafkaBrokers,
   return new JobRepositoryBytom(kafkaBrokers, consumerTopic, fileLastNotifyTime, this);
 }
 
-StratumSession *ServerBytom::createSession(evutil_socket_t fd, struct bufferevent *bev,
-                                           struct sockaddr *saddr, const uint32_t sessionID)
+unique_ptr<StratumConnectionBase> ServerBytom::createConnection(struct bufferevent *bev, struct sockaddr *saddr, const uint32_t sessionID)
 {
-  return new StratumSessionBytom(fd, bev, this, saddr,
-                                 kShareAvgSeconds_, sessionID);
+  return boost::make_unique<StratumConnectionBytom>(*this, bev, saddr, sessionID);
 }
 
 void ServerBytom::sendSolvedShare2Kafka(uint64_t nonce, const string &strHeader,

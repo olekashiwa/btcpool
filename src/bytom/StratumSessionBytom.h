@@ -27,31 +27,23 @@
 #include "StratumSession.h"
 #include "StratumServerBytom.h"
 
-class StratumSessionBytom : public StratumSessionBase<ServerBytom>
+class StratumSessionBytom : public StratumSessionBase<StratumTraitsBytom>
 {
 public:
-  StratumSessionBytom(evutil_socket_t fd, struct bufferevent *bev,
-                    ServerBytom *server, struct sockaddr *saddr,
-                    const int32_t shareAvgSeconds, const uint32_t extraNonce1);
-  void sendMiningNotify(shared_ptr<StratumJobEx> exJobPtr, bool isFirstJob=false) override;  
-  bool validate(const JsonNode &jmethod, const JsonNode &jparams) override;
-  bool needToSendLoginResponse() const override {return false;}
+  StratumSessionBytom(StratumConnectionBytom &connection,
+                      const DiffController &diffController,
+                      const std::string &clientAgent,
+                      const std::string &workerName,
+                      int64_t workerId);
 
+  void handleRequest(const std::string &idStr,
+                     const std::string &method,
+                     const JsonNode &jparams,
+                     const JsonNode &jroot) override;
 
-protected:
-  set<string> getSubscribeMethods() const override;
-  set<string> getAuthorizeMethods() const override;
-  set<string> getSubmitMethods() const override;
-  set<string> getGetWorkMethods() const override;
-  void handleRequest_Authorize(const string &idStr, const JsonNode &jparams, const JsonNode &jroot) override;
-  void handleRequest_Subscribe(const string &idStr, const JsonNode &jparams) override { }
-  void handleRequest_GetWork(const string &idStr, const JsonNode &jparams) override; 
-  void handleRequest_Submit   (const string &idStr, const JsonNode &jparams) override;   
-  
 private:
-  void Bytom_rpc2ResponseBoolean(const string &idStr, bool result, const string& failMessage = "");
-
-  uint8 shortJobId_;    //jobId starts from 1
+  void handleRequest_GetWork(const string &idStr, const JsonNode &jparams);
+  void handleRequest_Submit(const string &idStr, const JsonNode &jparams);
 };
 
 #endif  // STRATUM_SESSION_BYTOM_H_
